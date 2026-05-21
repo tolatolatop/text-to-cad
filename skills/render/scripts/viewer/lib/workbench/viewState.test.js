@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildCadViewState, formatCadViewStateForClipboard } from "./viewState.js";
+import {
+  buildCadViewState,
+  formatCadViewStateForClipboard,
+  normalizeCadViewStateForApply,
+  parseCadViewStateClipboardText
+} from "./viewState.js";
 
 test("buildCadViewState captures file, camera, selection, and view data", () => {
   const state = buildCadViewState({
@@ -56,4 +61,27 @@ test("formatCadViewStateForClipboard includes a short summary and JSON payload",
   assert.match(text, /File: resources\/generated\/model/);
   assert.match(text, /Parts: o1\.2/);
   assert.match(text, /"schema": "cad-explorer-view-state"/);
+});
+
+test("parseCadViewStateClipboardText reads summary-prefixed payloads", () => {
+  const state = buildCadViewState({
+    createdAt: "2026-05-22T00:00:00.000Z",
+    entry: { key: "generated/model.step", cadPath: "generated/model.step" },
+    cadPath: "resources/generated/model",
+    perspective: {
+      position: [1, 2, 3],
+      target: [0, 0, 0],
+      up: [0, 1, 0]
+    },
+    selectedPartIds: ["solid-1"],
+    hiddenPartIds: ["solid-2"]
+  });
+
+  const parsed = parseCadViewStateClipboardText(formatCadViewStateForClipboard(state));
+  const normalized = normalizeCadViewStateForApply(parsed);
+
+  assert.equal(normalized.file.key, "generated/model.step");
+  assert.deepEqual(normalized.camera.perspective.position, [1, 2, 3]);
+  assert.deepEqual(normalized.selection.selectedPartIds, ["solid-1"]);
+  assert.deepEqual(normalized.assembly.hiddenPartIds, ["solid-2"]);
 });

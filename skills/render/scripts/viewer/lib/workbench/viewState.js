@@ -176,3 +176,71 @@ export function formatCadViewStateForClipboard(viewState) {
   ].filter(Boolean);
   return `${summary.join("\n")}\n\n${JSON.stringify(state, null, 2)}\n`;
 }
+
+function tryParseViewStateJson(text, startIndex, endIndex) {
+  try {
+    const value = JSON.parse(text.slice(startIndex, endIndex + 1));
+    return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+export function parseCadViewStateClipboardText(text) {
+  const clipboardText = String(text || "").trim();
+  if (!clipboardText) {
+    throw new Error("Clipboard is empty");
+  }
+
+  const direct = tryParseViewStateJson(clipboardText, 0, clipboardText.length - 1);
+  if (direct?.schema === "cad-explorer-view-state") {
+    return direct;
+  }
+
+  const firstBraceIndex = clipboardText.indexOf("{");
+  if (firstBraceIndex < 0) {
+    throw new Error("Clipboard does not contain CAD view state JSON");
+  }
+
+  for (let endIndex = clipboardText.lastIndexOf("}"); endIndex > firstBraceIndex; endIndex = clipboardText.lastIndexOf("}", endIndex - 1)) {
+    const parsed = tryParseViewStateJson(clipboardText, firstBraceIndex, endIndex);
+    if (parsed?.schema === "cad-explorer-view-state") {
+      return parsed;
+    }
+  }
+
+  throw new Error("Clipboard does not contain a valid CAD view state");
+}
+
+export function normalizeCadViewStateForApply(viewState) {
+  if (!viewState || typeof viewState !== "object" || viewState.schema !== "cad-explorer-view-state") {
+    throw new Error("Unsupported CAD view state");
+  }
+
+  return {
+    file: {
+      key: normalizeString(viewState.file?.key),
+      cadPath: normalizeString(viewState.file?.cadPath),
+      renderFormat: normalizeString(viewState.file?.renderFormat),
+      entry: entrySummary(viewState.file?.entry)
+    },
+    camera: {
+      perspective: clonePerspective(viewState.camera?.perspective)
+    },
+    selection: {
+      selectedPartIds: uniqueStrings(viewState.selection?.selectedPartIds),
+      selectedReferenceIds: uniqueStrings(viewState.selection?.selectedReferenceIds),
+      cadRefs: uniqueStrings(viewState.selection?.cadRefs)
+    },
+    assembly: {
+      hiddenPartIds: uniqueStrings(viewState.assembly?.hiddenPartIds),
+      expandedTreeNodeIds: uniqueStrings(viewState.assembly?.expandedTreeNodeIds),
+      expandedAssemblyPartIds: uniqueStrings(viewState.assembly?.expandedAssemblyPartIds)
+    },
+    view: {
+      clipSettings: cloneJson(viewState.view?.clipSettings),
+      themeSettings: cloneJson(viewState.view?.themeSettings),
+      layout: cloneJson(viewState.view?.layout)
+    }
+  };
+}

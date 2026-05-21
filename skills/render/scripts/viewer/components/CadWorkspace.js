@@ -68,7 +68,9 @@ import {
 } from "../lib/workbench/fileSessionState";
 import {
   buildCadViewState,
-  formatCadViewStateForClipboard
+  formatCadViewStateForClipboard,
+  normalizeCadViewStateForApply,
+  parseCadViewStateClipboardText
 } from "../lib/workbench/viewState";
 import {
   CAD_WORKSPACE_LAYOUT_MODE,
@@ -1003,6 +1005,51 @@ function resolveCadRefSelection({ cadRefs = [], entry = null, references = [], a
     selectedPartIds: uniqueStringList(selectedPartIds),
     expandedAssemblyPartIds: uniqueStringList(expandedAssemblyPartIds).slice(0, 1)
   };
+}
+
+function viewStateEntryCandidates(viewState) {
+  const file = viewState?.file || {};
+  const entry = file.entry || {};
+  return uniqueStringList([
+    file.key,
+    file.cadPath,
+    entry.key,
+    entry.cadPath,
+    entry.path,
+    entry.file,
+    entry.sourcePath,
+    entry.stepPath
+  ]);
+}
+
+function normalizeViewStateEntryCandidate(value) {
+  return normalizePosixPath(String(value || "").trim()).replace(/^resources\//, "");
+}
+
+function findEntryForViewState(viewState, entries) {
+  const candidates = viewStateEntryCandidates(viewState);
+  if (!candidates.length) {
+    return null;
+  }
+
+  const normalizedCandidates = new Set(candidates.map(normalizeViewStateEntryCandidate).filter(Boolean));
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const entryCandidates = uniqueStringList([
+      fileKey(entry),
+      cadPathForEntry(entry),
+      entry?.key,
+      entry?.file,
+      entry?.path,
+      entry?.cadPath,
+      entry?.source?.path,
+      entry?.step?.path
+    ]);
+    if (entryCandidates.some((candidate) => normalizedCandidates.has(normalizeViewStateEntryCandidate(candidate)))) {
+      return entry;
+    }
+  }
+
+  return null;
 }
 
 function computeNextSelectionIds(currentIds, selectionId, { multiSelect = false } = {}) {
@@ -4769,6 +4816,120 @@ export default function CadWorkspace({
     workspaceLayoutMode
   ]);
 
+  const applyViewStateToWorkspace = useCallback((rawViewState) => {
+    const viewState = normalizeCadViewStateForApply(rawViewState);
+    const targetEntry = findEntryForViewState(viewState, catalogEntries);
+    if (!targetEntry) {
+      throw new Error("View state file is not available in this workspace");
+    }
+
+    const targetKey = fileKey(targetEntry);
+    if (!targetKey) {
+      throw new Error("View state file has no selectable key");
+    }
+
+    const perspective = clonePerspectiveSnapshot(viewState.camera.perspective);
+    const selectedReferences = viewState.selection.selectedReferenceIds;
+    const selectedParts = viewState.selection.selectedPartIds;
+    const hiddenParts = viewState.assembly.hiddenPartIds;
+    const expandedTreeNodes = viewState.assembly.expandedTreeNodeIds;
+    const expandedAssemblyParts = viewState.assembly.expandedAssemblyPartIds;
+    const clipSettings = viewState.view.clipSettings
+      ? normalizeStepClipSettings(viewState.view.clipSettings)
+      : normalizeStepClipSettings(DEFAULT_STEP_CLIP_SETTINGS);
+
+    if (selectedKey && selectedKey !== targetKey) {
+      flushActiveFileSession();
+    }
+
+    const currentSnapshot = selectedKey && selectedKey !== targetKey ? buildActiveTabSnapshot() : null;
+    const restoredTab = createTabRecord(targetKey, {
+      ...(openTabsRef.current.find((tab) => tab.key === targetKey) || {}),
+      perspective,
+      selectedReferenceIds: selectedReferences,
+      selectedPartIds: selectedParts,
+      hiddenPartIds: hiddenParts,
+      expandedStepTreeNodeIds: expandedTreeNodes,
+      expandedAssemblyPartIds: expandedAssemblyParts,
+      stepClipSettings: clipSettings,
+      tabToolMode: selectedReferences.length || selectedParts.length ? TAB_TOOL_MODE.REFERENCES : tabToolMode
+    });
+
+    if (targetKey !== selectedKey) {
+      activateEntryTab(targetKey);
+      if (!isDesktop) {
+        setSidebarOpen(false);
+      }
+    }
+
+    setOpenTabs((current) => {
+      let next = current;
+      if (currentSnapshot) {
+        next = upsertTabRecord(next, selectedKey, currentSnapshot);
+      }
+      return upsertTabRecord(next, targetKey, restoredTab);
+    });
+
+    selectedReferenceIdsRef.current = restoredTab.selectedReferenceIds;
+    setSelectedReferenceIds(restoredTab.selectedReferenceIds);
+    selectedPartIdsRef.current = restoredTab.selectedPartIds;
+    setSelectedPartIds(restoredTab.selectedPartIds);
+    setSelectedRenderPartIdByAssemblyPartId({});
+    setSelectedWholeEntryCadRefToken("");
+    setHiddenPartIds(restoredTab.hiddenPartIds);
+    setExpandedStepTreeNodeIds(restoredTab.expandedStepTreeNodeIds);
+    setExpandedAssemblyPartIds(restoredTab.expandedAssemblyPartIds);
+    setStepClipSettings(restoredTab.stepClipSettings);
+    setHoveredListReferenceId("");
+    setHoveredModelReferenceId("");
+    setHoveredListPartId("");
+    setHoveredModelPartId("");
+    setTabToolMode(restoredTab.tabToolMode);
+    activePerspectiveRef.current = perspective;
+    setExplorerPerspective(perspective);
+    if (perspective) {
+      explorerRef.current?.setPerspective?.(perspective, { animate: true });
+    }
+
+    if (viewState.view.themeSettings) {
+      updateThemeSettings(viewState.view.themeSettings);
+    }
+
+    const layout = viewState.view.layout || {};
+    if (typeof layout.sidebarOpen === "boolean") {
+      setSidebarOpen(layout.sidebarOpen);
+    }
+    if (typeof layout.tabToolsOpen === "boolean") {
+      setTabToolsOpen(layout.tabToolsOpen);
+    }
+    setCopyStatus(`Pasted view state for ${cadPathForEntry(targetEntry) || targetKey}`);
+    setScreenshotStatus("");
+  }, [
+    activateEntryTab,
+    buildActiveTabSnapshot,
+    catalogEntries,
+    flushActiveFileSession,
+    isDesktop,
+    selectedKey,
+    setTabToolsOpen,
+    tabToolMode,
+    updateThemeSettings
+  ]);
+
+  const handlePasteViewState = useCallback(async () => {
+    try {
+      const clipboard = globalThis.navigator?.clipboard;
+      if (typeof clipboard?.readText !== "function") {
+        throw new Error("Clipboard read is not supported in this browser");
+      }
+      const text = await clipboard.readText();
+      applyViewStateToWorkspace(parseCadViewStateClipboardText(text));
+    } catch (error) {
+      setScreenshotStatus("");
+      setCopyStatus(error instanceof Error ? error.message : "Failed to paste view state");
+    }
+  }, [applyViewStateToWorkspace]);
+
   const expandStepTreeAroundNode = useCallback((nodeId, { expandSelf = false } = {}) => {
     const normalizedNodeId = String(nodeId || "").trim();
     if (!normalizedNodeId || !stepTreeRoot) {
@@ -5392,6 +5553,7 @@ export default function CadWorkspace({
                 drawingStrokes={drawingStrokes}
                 handleEnterPreviewMode={handleEnterPreviewMode}
                 handleCopyViewState={handleCopyViewState}
+                handlePasteViewState={handlePasteViewState}
                 handleScreenshotCopy={handleScreenshotCopy}
                 handleScreenshotDownload={handleScreenshotDownload}
               />
