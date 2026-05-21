@@ -1052,6 +1052,25 @@ function findEntryForViewState(viewState, entries) {
   return null;
 }
 
+function applyRestoredExplorerPerspective(explorerRef, perspective) {
+  const restoredPerspective = clonePerspectiveSnapshot(perspective);
+  if (!restoredPerspective) {
+    return false;
+  }
+
+  const apply = () => explorerRef.current?.setPerspective?.(restoredPerspective, { animate: false }) === true;
+  const applied = apply();
+  if (typeof window !== "undefined") {
+    window.requestAnimationFrame?.(() => {
+      apply();
+    });
+    window.setTimeout(() => {
+      apply();
+    }, 120);
+  }
+  return applied;
+}
+
 function computeNextSelectionIds(currentIds, selectionId, { multiSelect = false } = {}) {
   const normalizedSelectionId = String(selectionId || "").trim();
   if (!normalizedSelectionId) {
@@ -4887,9 +4906,7 @@ export default function CadWorkspace({
     setTabToolMode(restoredTab.tabToolMode);
     activePerspectiveRef.current = perspective;
     setExplorerPerspective(perspective);
-    if (perspective) {
-      explorerRef.current?.setPerspective?.(perspective, { animate: true });
-    }
+    const cameraRestored = applyRestoredExplorerPerspective(explorerRef, perspective);
 
     if (viewState.view.themeSettings) {
       updateThemeSettings(viewState.view.themeSettings);
@@ -4902,7 +4919,7 @@ export default function CadWorkspace({
     if (typeof layout.tabToolsOpen === "boolean") {
       setTabToolsOpen(layout.tabToolsOpen);
     }
-    setCopyStatus(`Pasted view state for ${cadPathForEntry(targetEntry) || targetKey}`);
+    setCopyStatus(`Pasted view state${cameraRestored ? " with camera" : ""} for ${cadPathForEntry(targetEntry) || targetKey}`);
     setScreenshotStatus("");
   }, [
     activateEntryTab,
