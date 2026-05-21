@@ -1,5 +1,6 @@
 import {
   ClipboardList,
+  ClipboardPaste,
   Copy,
   Crosshair,
   Download,
@@ -41,6 +42,7 @@ function DesktopFloatingToolBar({
   drawingStrokes,
   handleEnterPreviewMode,
   handleCopyViewState,
+  handlePasteViewState,
   handleScreenshotCopy,
   handleScreenshotDownload
 }) {
@@ -121,6 +123,16 @@ function DesktopFloatingToolBar({
             disabled={explorerLoading || !selectedMeshData}
           >
             <ClipboardList className="size-3.5" strokeWidth={2} aria-hidden="true" />
+          </ToolbarButton>
+
+          <ToolbarButton
+            label="Paste view state"
+            onClick={() => {
+              void handlePasteViewState();
+            }}
+            disabled={explorerLoading}
+          >
+            <ClipboardPaste className="size-3.5" strokeWidth={2} aria-hidden="true" />
           </ToolbarButton>
 
           <ToolbarButton
