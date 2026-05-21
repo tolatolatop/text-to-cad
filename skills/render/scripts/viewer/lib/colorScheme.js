@@ -1,7 +1,7 @@
 export const SYSTEM_COLOR_SCHEME_ID = "system";
 export const LIGHT_COLOR_SCHEME_ID = "light";
 export const DARK_COLOR_SCHEME_ID = "dark";
-export const DEFAULT_COLOR_SCHEME_ID = SYSTEM_COLOR_SCHEME_ID;
+export const DEFAULT_COLOR_SCHEME_ID = DARK_COLOR_SCHEME_ID;
 export const THEME_STORAGE_KEY = "cad-explorer:theme";
 
 const COLOR_SCHEME_ALIASES = Object.freeze({
