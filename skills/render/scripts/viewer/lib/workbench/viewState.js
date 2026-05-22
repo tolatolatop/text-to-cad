@@ -1,3 +1,29 @@
+export const CAD_EXPLORER_VIEW_STATE_SCHEMA = "cad-explorer-view-state";
+export const CAD_EXPLORER_VIEW_STATE_VERSION = 1;
+
+/**
+ * Clipboard-safe snapshot of the CAD Explorer context needed to reproduce a reviewed view.
+ *
+ * @typedef {Object} CadExplorerViewState
+ * @property {"cad-explorer-view-state"} schema
+ * @property {number} version
+ * @property {string} createdAt
+ * @property {{key: string, cadPath: string, renderFormat: string, entry: Object|null}} file
+ * @property {{perspective: Object|null}} camera
+ * @property {{
+ *   selectedPartIds: string[],
+ *   selectedParts: Object[],
+ *   selectedReferenceIds: string[],
+ *   selectedReferences: Object[],
+ *   cadRefs: string[]
+ * }} selection
+ * @property {{partId: string, referenceId: string}} hover
+ * @property {{hiddenPartIds: string[], expandedTreeNodeIds: string[], expandedAssemblyPartIds: string[]}} assembly
+ * @property {{clipSettings: Object|null, themeSettings: Object|null, layout: Object|null}} view
+ * @property {{url: string}} browser
+ * @property {string} notes
+ */
+
 function normalizeString(value) {
   return String(value || "").trim();
 }
@@ -98,8 +124,13 @@ function referenceSummary(reference) {
   };
 }
 
+/**
+ * Build a normalized, versioned view-state document for clipboard sharing.
+ *
+ * @returns {CadExplorerViewState}
+ */
 export function buildCadViewState({
-  version = 1,
+  version = CAD_EXPLORER_VIEW_STATE_VERSION,
   createdAt = new Date().toISOString(),
   entry = null,
   cadPath = "",
@@ -124,7 +155,7 @@ export function buildCadViewState({
   const normalizedCadPath = normalizeString(cadPath);
   const entryData = entrySummary(entry);
   return {
-    schema: "cad-explorer-view-state",
+    schema: CAD_EXPLORER_VIEW_STATE_SCHEMA,
     version,
     createdAt,
     file: {
@@ -193,7 +224,7 @@ export function parseCadViewStateClipboardText(text) {
   }
 
   const direct = tryParseViewStateJson(clipboardText, 0, clipboardText.length - 1);
-  if (direct?.schema === "cad-explorer-view-state") {
+  if (direct?.schema === CAD_EXPLORER_VIEW_STATE_SCHEMA) {
     return direct;
   }
 
@@ -204,7 +235,7 @@ export function parseCadViewStateClipboardText(text) {
 
   for (let endIndex = clipboardText.lastIndexOf("}"); endIndex > firstBraceIndex; endIndex = clipboardText.lastIndexOf("}", endIndex - 1)) {
     const parsed = tryParseViewStateJson(clipboardText, firstBraceIndex, endIndex);
-    if (parsed?.schema === "cad-explorer-view-state") {
+    if (parsed?.schema === CAD_EXPLORER_VIEW_STATE_SCHEMA) {
       return parsed;
     }
   }
@@ -213,7 +244,7 @@ export function parseCadViewStateClipboardText(text) {
 }
 
 export function normalizeCadViewStateForApply(viewState) {
-  if (!viewState || typeof viewState !== "object" || viewState.schema !== "cad-explorer-view-state") {
+  if (!viewState || typeof viewState !== "object" || viewState.schema !== CAD_EXPLORER_VIEW_STATE_SCHEMA) {
     throw new Error("Unsupported CAD view state");
   }
 

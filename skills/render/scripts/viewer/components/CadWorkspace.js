@@ -766,6 +766,28 @@ function buildSelectionCopyPayload({ references = [], parts = [], entry = null }
   };
 }
 
+function readCurrentExplorerPerspective({ explorerRef, activePerspectiveRef, fallbackPerspective } = {}) {
+  return clonePerspectiveSnapshot(
+    explorerRef?.current?.getPerspective?.() ||
+    activePerspectiveRef?.current ||
+    fallbackPerspective
+  );
+}
+
+function buildWorkspaceLayoutViewState({
+  sidebarOpen,
+  selectedFileSheetKind,
+  tabToolsOpen,
+  workspaceLayoutMode
+} = {}) {
+  return {
+    sidebarOpen,
+    selectedFileSheetKind,
+    tabToolsOpen,
+    workspaceLayoutMode
+  };
+}
+
 function buildSelectionCopyButtonLabel(lines, { count = 0, limit = 1 } = {}) {
   const copyLines = Array.isArray(lines) ? lines : [];
   const normalizedLimit = Math.max(1, Number(limit) || 1);
@@ -1050,6 +1072,51 @@ function findEntryForViewState(viewState, entries) {
   }
 
   return null;
+}
+
+function resolveViewStateTarget(viewState, entries) {
+  const targetEntry = findEntryForViewState(viewState, entries);
+  if (!targetEntry) {
+    throw new Error("View state file is not available in this workspace");
+  }
+
+  const targetKey = fileKey(targetEntry);
+  if (!targetKey) {
+    throw new Error("View state file has no selectable key");
+  }
+
+  return { targetEntry, targetKey };
+}
+
+function readRestorableViewStateSlices(viewState) {
+  const selectedReferences = viewState.selection.selectedReferenceIds;
+  const selectedParts = viewState.selection.selectedPartIds;
+  return {
+    perspective: clonePerspectiveSnapshot(viewState.camera.perspective),
+    selectedReferences,
+    selectedParts,
+    hiddenParts: viewState.assembly.hiddenPartIds,
+    expandedTreeNodes: viewState.assembly.expandedTreeNodeIds,
+    expandedAssemblyParts: viewState.assembly.expandedAssemblyPartIds,
+    clipSettings: viewState.view.clipSettings
+      ? normalizeStepClipSettings(viewState.view.clipSettings)
+      : normalizeStepClipSettings(DEFAULT_STEP_CLIP_SETTINGS),
+    tabToolMode: selectedReferences.length || selectedParts.length ? TAB_TOOL_MODE.REFERENCES : null
+  };
+}
+
+function buildRestoredViewStateTab({ targetKey, existingTab, restored, fallbackTabToolMode }) {
+  return createTabRecord(targetKey, {
+    ...(existingTab || {}),
+    perspective: restored.perspective,
+    selectedReferenceIds: restored.selectedReferences,
+    selectedPartIds: restored.selectedParts,
+    hiddenPartIds: restored.hiddenParts,
+    expandedStepTreeNodeIds: restored.expandedTreeNodes,
+    expandedAssemblyPartIds: restored.expandedAssemblyParts,
+    stepClipSettings: restored.clipSettings,
+    tabToolMode: restored.tabToolMode || fallbackTabToolMode
+  });
 }
 
 function applyRestoredExplorerPerspective(explorerRef, perspective) {
@@ -4758,36 +4825,45 @@ export default function CadWorkspace({
     }
 
     try {
-      const selectedReferencesForCopy = selectedReferenceIdsRef.current
+      const selectedPartIds = selectedPartIdsRef.current;
+      const selectedReferenceIds = selectedReferenceIdsRef.current;
+      // Mirrors handleCopySelection without refactoring that existing flow in this feature PR.
+      const selectedReferencesForCopy = selectedReferenceIds
         .map((id) => effectiveActiveReferenceMap.get(id))
         .filter(Boolean);
-      if (!isAssemblyView && selectedPartIdsRef.current.includes(STEP_MODEL_ROOT_ID)) {
+      if (!isAssemblyView && selectedPartIds.includes(STEP_MODEL_ROOT_ID)) {
         const wholeStepEntryReference = buildWholeStepEntryCopyReference(selectedEntry);
         if (wholeStepEntryReference) {
           selectedReferencesForCopy.push(wholeStepEntryReference);
         }
       }
       const selectedPartsForCopy = supportsPartSelection && isAssemblyView
-        ? selectedPartIdsRef.current.map((id) => assemblyPartMap.get(id)).filter(Boolean)
+        ? selectedPartIds.map((id) => assemblyPartMap.get(id)).filter(Boolean)
         : [];
       const selectedCadRefs = buildSelectionCopyPayload({
         references: selectedReferencesForCopy,
         parts: selectedPartsForCopy,
         entry: selectedEntry
       }).lines;
-      const currentPerspective = clonePerspectiveSnapshot(
-        explorerRef.current?.getPerspective?.() ||
-        activePerspectiveRef.current ||
-        explorerPerspective
-      );
+      const currentPerspective = readCurrentExplorerPerspective({
+        explorerRef,
+        activePerspectiveRef,
+        fallbackPerspective: explorerPerspective
+      });
+      const layout = buildWorkspaceLayoutViewState({
+        sidebarOpen,
+        selectedFileSheetKind,
+        tabToolsOpen,
+        workspaceLayoutMode
+      });
       const state = buildCadViewState({
         entry: selectedEntry,
         cadPath: cadPathForEntry(selectedEntry),
         renderFormat: effectiveRenderFormat,
         perspective: currentPerspective,
-        selectedPartIds: selectedPartIdsRef.current,
+        selectedPartIds,
         selectedParts: selectedPartsForCopy,
-        selectedReferenceIds: selectedReferenceIdsRef.current,
+        selectedReferenceIds,
         selectedReferences: selectedReferencesForCopy,
         selectedCadRefs,
         hoveredPartId,
@@ -4797,12 +4873,7 @@ export default function CadWorkspace({
         expandedAssemblyPartIds,
         clipSettings: isStepView ? stepClipSettings : null,
         themeSettings,
-        layout: {
-          sidebarOpen,
-          selectedFileSheetKind,
-          tabToolsOpen,
-          workspaceLayoutMode
-        },
+        layout,
         url: typeof window !== "undefined" ? window.location.href : "",
         notes: "Paste this payload into an issue, chat, or local repro script to restore the reviewed CAD context."
       });
@@ -4835,60 +4906,7 @@ export default function CadWorkspace({
     workspaceLayoutMode
   ]);
 
-  const applyViewStateToWorkspace = useCallback((rawViewState) => {
-    const viewState = normalizeCadViewStateForApply(rawViewState);
-    const targetEntry = findEntryForViewState(viewState, catalogEntries);
-    if (!targetEntry) {
-      throw new Error("View state file is not available in this workspace");
-    }
-
-    const targetKey = fileKey(targetEntry);
-    if (!targetKey) {
-      throw new Error("View state file has no selectable key");
-    }
-
-    const perspective = clonePerspectiveSnapshot(viewState.camera.perspective);
-    const selectedReferences = viewState.selection.selectedReferenceIds;
-    const selectedParts = viewState.selection.selectedPartIds;
-    const hiddenParts = viewState.assembly.hiddenPartIds;
-    const expandedTreeNodes = viewState.assembly.expandedTreeNodeIds;
-    const expandedAssemblyParts = viewState.assembly.expandedAssemblyPartIds;
-    const clipSettings = viewState.view.clipSettings
-      ? normalizeStepClipSettings(viewState.view.clipSettings)
-      : normalizeStepClipSettings(DEFAULT_STEP_CLIP_SETTINGS);
-
-    if (selectedKey && selectedKey !== targetKey) {
-      flushActiveFileSession();
-    }
-
-    const currentSnapshot = selectedKey && selectedKey !== targetKey ? buildActiveTabSnapshot() : null;
-    const restoredTab = createTabRecord(targetKey, {
-      ...(openTabsRef.current.find((tab) => tab.key === targetKey) || {}),
-      perspective,
-      selectedReferenceIds: selectedReferences,
-      selectedPartIds: selectedParts,
-      hiddenPartIds: hiddenParts,
-      expandedStepTreeNodeIds: expandedTreeNodes,
-      expandedAssemblyPartIds: expandedAssemblyParts,
-      stepClipSettings: clipSettings,
-      tabToolMode: selectedReferences.length || selectedParts.length ? TAB_TOOL_MODE.REFERENCES : tabToolMode
-    });
-
-    if (targetKey !== selectedKey) {
-      activateEntryTab(targetKey);
-      if (!isDesktop) {
-        setSidebarOpen(false);
-      }
-    }
-
-    setOpenTabs((current) => {
-      let next = current;
-      if (currentSnapshot) {
-        next = upsertTabRecord(next, selectedKey, currentSnapshot);
-      }
-      return upsertTabRecord(next, targetKey, restoredTab);
-    });
-
+  const applyRestoredViewStateTab = useCallback((restoredTab, perspective) => {
     selectedReferenceIdsRef.current = restoredTab.selectedReferenceIds;
     setSelectedReferenceIds(restoredTab.selectedReferenceIds);
     selectedPartIdsRef.current = restoredTab.selectedPartIds;
@@ -4906,8 +4924,9 @@ export default function CadWorkspace({
     setTabToolMode(restoredTab.tabToolMode);
     activePerspectiveRef.current = perspective;
     setExplorerPerspective(perspective);
-    const cameraRestored = applyRestoredExplorerPerspective(explorerRef, perspective);
+  }, []);
 
+  const applyRestoredViewStateLayout = useCallback((viewState) => {
     if (viewState.view.themeSettings) {
       updateThemeSettings(viewState.view.themeSettings);
     }
@@ -4919,18 +4938,55 @@ export default function CadWorkspace({
     if (typeof layout.tabToolsOpen === "boolean") {
       setTabToolsOpen(layout.tabToolsOpen);
     }
+  }, [setTabToolsOpen, updateThemeSettings]);
+
+  const applyViewStateToWorkspace = useCallback((rawViewState) => {
+    const viewState = normalizeCadViewStateForApply(rawViewState);
+    const { targetEntry, targetKey } = resolveViewStateTarget(viewState, catalogEntries);
+    const restored = readRestorableViewStateSlices(viewState);
+
+    if (selectedKey && selectedKey !== targetKey) {
+      flushActiveFileSession();
+    }
+
+    const currentSnapshot = selectedKey && selectedKey !== targetKey ? buildActiveTabSnapshot() : null;
+    const restoredTab = buildRestoredViewStateTab({
+      targetKey,
+      existingTab: openTabsRef.current.find((tab) => tab.key === targetKey),
+      restored,
+      fallbackTabToolMode: tabToolMode
+    });
+
+    if (targetKey !== selectedKey) {
+      activateEntryTab(targetKey);
+      if (!isDesktop) {
+        setSidebarOpen(false);
+      }
+    }
+
+    setOpenTabs((current) => {
+      let next = current;
+      if (currentSnapshot) {
+        next = upsertTabRecord(next, selectedKey, currentSnapshot);
+      }
+      return upsertTabRecord(next, targetKey, restoredTab);
+    });
+
+    applyRestoredViewStateTab(restoredTab, restored.perspective);
+    const cameraRestored = applyRestoredExplorerPerspective(explorerRef, restored.perspective);
+    applyRestoredViewStateLayout(viewState);
     setCopyStatus(`Pasted view state${cameraRestored ? " with camera" : ""} for ${cadPathForEntry(targetEntry) || targetKey}`);
     setScreenshotStatus("");
   }, [
     activateEntryTab,
+    applyRestoredViewStateLayout,
+    applyRestoredViewStateTab,
     buildActiveTabSnapshot,
     catalogEntries,
     flushActiveFileSession,
     isDesktop,
     selectedKey,
-    setTabToolsOpen,
-    tabToolMode,
-    updateThemeSettings
+    tabToolMode
   ]);
 
   const handlePasteViewState = useCallback(async () => {

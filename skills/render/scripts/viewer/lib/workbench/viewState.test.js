@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  CAD_EXPLORER_VIEW_STATE_SCHEMA,
+  CAD_EXPLORER_VIEW_STATE_VERSION,
   buildCadViewState,
   formatCadViewStateForClipboard,
   normalizeCadViewStateForApply,
@@ -38,7 +40,8 @@ test("buildCadViewState captures file, camera, selection, and view data", () => 
     url: "http://127.0.0.1:4178/?file=generated/model.step"
   });
 
-  assert.equal(state.schema, "cad-explorer-view-state");
+  assert.equal(state.schema, CAD_EXPLORER_VIEW_STATE_SCHEMA);
+  assert.equal(state.version, CAD_EXPLORER_VIEW_STATE_VERSION);
   assert.equal(state.file.cadPath, "resources/generated/model");
   assert.deepEqual(state.camera.perspective.position, [1, 2, 3]);
   assert.deepEqual(state.selection.selectedPartIds, ["o1.2"]);
@@ -60,7 +63,17 @@ test("formatCadViewStateForClipboard includes a short summary and JSON payload",
   assert.match(text, /CAD Explorer view state/);
   assert.match(text, /File: resources\/generated\/model/);
   assert.match(text, /Parts: o1\.2/);
+  assert.match(text, /CAD refs: @cad\[resources\/generated\/model#o1\.2\]/);
   assert.match(text, /"schema": "cad-explorer-view-state"/);
+
+  const [summary, payload] = text.trimEnd().split("\n\n");
+  assert.equal(summary, [
+    "CAD Explorer view state",
+    "File: resources/generated/model",
+    "Parts: o1.2",
+    "CAD refs: @cad[resources/generated/model#o1.2]"
+  ].join("\n"));
+  assert.equal(JSON.parse(payload).schema, CAD_EXPLORER_VIEW_STATE_SCHEMA);
 });
 
 test("parseCadViewStateClipboardText reads summary-prefixed payloads", () => {
@@ -84,4 +97,86 @@ test("parseCadViewStateClipboardText reads summary-prefixed payloads", () => {
   assert.deepEqual(normalized.camera.perspective.position, [1, 2, 3]);
   assert.deepEqual(normalized.selection.selectedPartIds, ["solid-1"]);
   assert.deepEqual(normalized.assembly.hiddenPartIds, ["solid-2"]);
+});
+
+test("parseCadViewStateClipboardText accepts direct JSON payloads", () => {
+  const state = buildCadViewState({
+    createdAt: "2026-05-22T00:00:00.000Z",
+    cadPath: "resources/generated/direct-model",
+    selectedReferenceIds: ["face-1"]
+  });
+
+  const parsed = parseCadViewStateClipboardText(JSON.stringify(state));
+
+  assert.equal(parsed.schema, CAD_EXPLORER_VIEW_STATE_SCHEMA);
+  assert.equal(parsed.file.cadPath, "resources/generated/direct-model");
+  assert.deepEqual(parsed.selection.selectedReferenceIds, ["face-1"]);
+});
+
+test("parseCadViewStateClipboardText extracts payloads from surrounding prose", () => {
+  const state = buildCadViewState({
+    createdAt: "2026-05-22T00:00:00.000Z",
+    cadPath: "resources/generated/prose-model",
+    hiddenPartIds: ["part-a"]
+  });
+  const clipboardText = [
+    "I reviewed this model from a low front view.",
+    "",
+    formatCadViewStateForClipboard(state),
+    "Additional issue notes after the JSON should be ignored."
+  ].join("\n");
+
+  const parsed = parseCadViewStateClipboardText(clipboardText);
+
+  assert.equal(parsed.schema, CAD_EXPLORER_VIEW_STATE_SCHEMA);
+  assert.equal(parsed.file.cadPath, "resources/generated/prose-model");
+  assert.deepEqual(parsed.assembly.hiddenPartIds, ["part-a"]);
+});
+
+test("normalizeCadViewStateForApply rejects unsupported schemas", () => {
+  assert.throws(
+    () => normalizeCadViewStateForApply({ schema: "other-view-state" }),
+    /Unsupported CAD view state/
+  );
+});
+
+test("normalizeCadViewStateForApply sanitizes duplicate ids and invalid camera snapshots", () => {
+  const normalized = normalizeCadViewStateForApply({
+    schema: CAD_EXPLORER_VIEW_STATE_SCHEMA,
+    file: { cadPath: " resources/generated/model " },
+    camera: {
+      perspective: {
+        position: [1, 2],
+        target: [0, 0, 0],
+        up: [0, 0, 1]
+      }
+    },
+    selection: {
+      selectedPartIds: [" part-a ", "part-a", ""],
+      selectedReferenceIds: ["face-1", "face-1"],
+      cadRefs: [" @cad[resources/generated/model#face-1] "]
+    },
+    assembly: {
+      hiddenPartIds: ["part-b", "part-b"],
+      expandedTreeNodeIds: ["root", ""],
+      expandedAssemblyPartIds: ["asm-1", "asm-1"]
+    },
+    view: {
+      clipSettings: { enabled: true },
+      themeSettings: undefined,
+      layout: { sidebarOpen: true }
+    }
+  });
+
+  assert.equal(normalized.file.cadPath, "resources/generated/model");
+  assert.equal(normalized.camera.perspective, null);
+  assert.deepEqual(normalized.selection.selectedPartIds, ["part-a"]);
+  assert.deepEqual(normalized.selection.selectedReferenceIds, ["face-1"]);
+  assert.deepEqual(normalized.selection.cadRefs, ["@cad[resources/generated/model#face-1]"]);
+  assert.deepEqual(normalized.assembly.hiddenPartIds, ["part-b"]);
+  assert.deepEqual(normalized.assembly.expandedTreeNodeIds, ["root"]);
+  assert.deepEqual(normalized.assembly.expandedAssemblyPartIds, ["asm-1"]);
+  assert.deepEqual(normalized.view.clipSettings, { enabled: true });
+  assert.equal(normalized.view.themeSettings, null);
+  assert.deepEqual(normalized.view.layout, { sidebarOpen: true });
 });
